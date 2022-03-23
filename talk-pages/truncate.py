@@ -1,6 +1,4 @@
 import argparse
-import fugashi
-import jieba
 import pandas as pd
 import warnings
 
@@ -17,7 +15,8 @@ pandarallel.initialize(nb_workers=12, progress_bar=True)
 def parse_args():
 	opts = argparse.ArgumentParser()
 	opts.add_argument('db')
-	opts.add_argument('tbl')
+	opts.add_argument('trunc_tbl', description='Name of the table to be created with truncated English texts')
+	opts.add_argument('tbls', nargs='+', description='The names of the tables in each language, which contain English translations.')
 	args = opts.parse_args()
 	return args
 
@@ -27,19 +26,9 @@ def db_connect(db):
 	return con
 
 
-def tokenize(text, lang):
-	if lang == 'en' or lang == 'es':
-		return word_tokenize(text)
-	if lang == 'zh':
-		return jieba.cut(text)
-	if lang == 'ja':
-		return [w.surface for w in fugashi.Tagger()(text)]
-	return None
-
-
 def tokenized_pages(tbl, con):
 	df = pd.read_sql(tbl, con)
-	df['tokenized'] = df.parallel_apply(lambda r: list(tokenize(r['message'], r['lang'])), axis=1)
+	df['tokenized'] = df.parallel_apply(lambda r: list(word_tokenize(r['message_en'])), axis=1)
 	df['length'] = df['tokenized'].apply(len)
 	return df
 
@@ -59,10 +48,15 @@ def main():
 	args = parse_args()
 	con = db_connect(args.db)
 
-	msgs = tokenized_pages(args.tbl, con)
+	# Tokenize all the English pages
+	msgs = pd.concat([tokenized_pages(tbl, con) for tbl in args.tbls])
+
 	pages = msgs['unified_id'].drop_duplicates().to_numpy()
 	truncated_df = pd.concat([unify_length(page, msgs) for page in tqdm(pages, desc='Unifying page lengths')])
-	truncated_df.to_sql('{}_trunc'.format(args.tbl), con, index=False, if_exists='replace')
+
+	langs = msgs['lang'].drop_duplicates().to_numpy()
+	for lang in langs:
+		truncated_df.loc[truncated_df['lang'] == lang, :].to_sql('{}_trunc_{}'.format(args.trunc_tbl, lang), con, index=False, if_exists='replace')
 
 
 if __name__ == '__main__':
